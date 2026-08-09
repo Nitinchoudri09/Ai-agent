@@ -14,7 +14,7 @@ export default async function handler(req: Request, res: Response) {
 
     // Find step_run and all relations
     const query = `
-      query GetStepRun($id: uuid!) {
+      query GetStepRun($id: uuid!, $userId: uuid!) {
         step_runs_by_pk(id: $id) {
           id
           status
@@ -26,8 +26,9 @@ export default async function handler(req: Request, res: Response) {
             status
             workflow {
               id
+              org_id
               organization {
-                org_members(where: {user_id: {_eq: "${userId}"}}) {
+                org_members(where: {user_id: {_eq: $userId}}) {
                   role
                 }
               }
@@ -44,7 +45,7 @@ export default async function handler(req: Request, res: Response) {
       }
     `;
 
-    const data = await graphqlClient(query, { id: step_run_id });
+    const data = await graphqlClient(query, { id: step_run_id, userId });
     const stepRun = data.step_runs_by_pk;
 
     if (!stepRun) return res.status(404).json({ message: 'Step run not found' });
@@ -62,7 +63,7 @@ export default async function handler(req: Request, res: Response) {
 
     // Mark approved
     await graphqlClient(`
-      mutation Approve($id: uuid!, $userId: uuid!) {
+      mutation Approve($id: uuid!, $userId: uuid!, $runId: uuid!) {
         update_step_runs_by_pk(pk_columns: {id: $id}, _set: {
           status: "completed",
           approved_by: $userId,
@@ -70,18 +71,17 @@ export default async function handler(req: Request, res: Response) {
         }) {
           id
         }
-        update_workflow_runs_by_pk(pk_columns: {id: "${workflowRun.id}"}, _set: {
+        update_workflow_runs_by_pk(pk_columns: {id: $runId}, _set: {
           status: "running"
         }) {
           id
         }
       }
-    `, { id: step_run_id, userId });
+    `, { id: step_run_id, userId, runId: workflowRun.id });
 
     res.status(200).json({ run_id: workflowRun.id, status: 'resumed' });
 
-    // Resume execution
-    resumeWorkflow(workflowRun.id, workflow.workflow_steps, stepRun.workflow_step.id).catch(console.error);
+    resumeWorkflow(workflowRun.id, workflow.org_id, workflow.workflow_steps, stepRun.workflow_step.id).catch(console.error);
 
   } catch (error: any) {
     console.error(error);
@@ -89,20 +89,30 @@ export default async function handler(req: Request, res: Response) {
   }
 }
 
-async function resumeWorkflow(runId: string, steps: any[], approvedStepId: string) {
-  // Find index of approved step
+async function rollbackQuota(orgId: string) {
+  await graphqlClient(`
+    mutation RollbackQuota($orgId: uuid!) {
+      update_organizations_by_pk(
+        pk_columns: { id: $orgId },
+        _inc: { quota_used: -1 }
+      ) {
+        id
+      }
+    }
+  `, { orgId });
+}
+
+async function resumeWorkflow(runId: string, orgId: string, steps: any[], approvedStepId: string) {
   const startIndex = steps.findIndex(s => s.id === approvedStepId) + 1;
   let previousOutput = null;
 
-  // We should ideally fetch the previous output from the DB if needed by next step,
-  // For simplicity, we'll fetch the approved step's input to carry forward if it exists.
   const stepData = await graphqlClient(`
-    query GetOutput($id: uuid!) {
-      step_runs(where: {workflow_step_id: {_eq: $id}, workflow_run_id: {_eq: "${runId}"}}) {
+    query GetOutput($id: uuid!, $runId: uuid!) {
+      step_runs(where: {workflow_step_id: {_eq: $id}, workflow_run_id: {_eq: $runId}}) {
         input
       }
     }
-  `, { id: approvedStepId });
+  `, { id: approvedStepId, runId });
   previousOutput = stepData.step_runs[0]?.input?.previous_output;
 
   for (let i = startIndex; i < steps.length; i++) {
@@ -132,17 +142,27 @@ async function resumeWorkflow(runId: string, steps: any[], approvedStepId: strin
       workflowRunId: runId,
       stepRunId: stepRunId,
       previousOutput: previousOutput,
-      env: process.env as any
+      env: process.env as any,
+      onAttempt: async (attempt: number) => {
+        await graphqlClient(`
+          mutation UpdateAttempt($id: uuid!, $attempt: Int!) {
+            update_step_runs_by_pk(pk_columns: {id: $id}, _set: {attempt_count: $attempt}) {
+              id
+            }
+          }
+        `, { id: stepRunId, attempt });
+      }
     };
 
     const result = await executeStep(step, context);
 
     const updateStepMutation = `
-      mutation UpdateStep($id: uuid!, $status: String!, $output: jsonb, $error: String) {
+      mutation UpdateStep($id: uuid!, $status: String!, $output: jsonb, $error: String, $attempts: Int!) {
         update_step_runs_by_pk(pk_columns: {id: $id}, _set: {
           status: $status,
           output: $output,
           error: $error,
+          attempt_count: $attempts,
           completed_at: "now()"
         }) {
           id
@@ -153,11 +173,13 @@ async function resumeWorkflow(runId: string, steps: any[], approvedStepId: strin
       id: stepRunId,
       status: result.status,
       output: result.output || null,
-      error: result.error || null
+      error: result.error || null,
+      attempts: result.attempts || 1
     });
 
     if (result.status === 'failed') {
       await updateWorkflowRunStatus(runId, 'failed', result.error);
+      await rollbackQuota(orgId); // Release quota on failure
       return; 
     }
 
@@ -171,20 +193,7 @@ async function resumeWorkflow(runId: string, steps: any[], approvedStepId: strin
     }
   }
 
-  // Completed all steps
   await updateWorkflowRunStatus(runId, 'completed');
-  
-  // Increment quota
-  await graphqlClient(`
-    mutation IncrementQuota($runId: uuid!) {
-      update_organizations(
-        where: {workflows: {workflow_runs: {id: {_eq: $runId}}}},
-        _inc: {quota_used: 1}
-      ) {
-        affected_rows
-      }
-    }
-  `, { runId });
 }
 
 async function updateWorkflowRunStatus(runId: string, status: string, error?: string) {

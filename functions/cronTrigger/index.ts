@@ -4,103 +4,104 @@ import { executeStep } from '../_utils/executor';
 
 export default async function handler(req: Request, res: Response) {
   try {
-    const { workflow_id } = req.body.input || {};
-    const sessionVars = req.body.session_variables || {};
-    const userId = sessionVars['x-hasura-user-id'];
-
-    if (!userId) {
+    const authHeader = req.headers.authorization;
+    if (process.env.WEBHOOK_SECRET && authHeader !== `Bearer ${process.env.WEBHOOK_SECRET}`) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    // Step 2 & 3: Find workflow and organization
-    const workflowQuery = `
-      query GetWorkflow($id: uuid!, $userId: uuid!) {
-        workflows_by_pk(id: $id) {
+    const query = `
+      query GetScheduledTriggers {
+        workflow_triggers(where: {trigger_type: {_eq: "scheduled"}, enabled: {_eq: true}}) {
           id
-          org_id
-          organization {
-            quota_allowed
-            quota_used
-            org_members(where: {user_id: {_eq: $userId}}) {
-              role
+          workflow_id
+          config
+        }
+      }
+    `;
+
+    const data = await graphqlClient(query, {});
+    const triggers = data.workflow_triggers || [];
+
+    const triggeredRuns = [];
+
+    for (const trigger of triggers) {
+      // Reserve quota atomically
+      try {
+        const wfDetails = await graphqlClient(`
+          query GetWfDetails($id: uuid!) {
+            workflows_by_pk(id: $id) {
+              org_id
             }
           }
-          workflow_steps(order_by: {step_order: asc}) {
-            id
-            name
-            type
-            config
-            step_order
+        `, { id: trigger.workflow_id });
+        const orgId = wfDetails.workflows_by_pk?.org_id;
+
+        if (orgId) {
+          const reserveResult = await graphqlClient(`
+            mutation ReserveQuota($orgId: uuid!) {
+              update_organizations_by_pk(
+                pk_columns: { id: $orgId },
+                _inc: { quota_used: 1 }
+              ) {
+                id
+                quota_used
+                quota_allowed
+              }
+            }
+          `, { orgId });
+
+          const org = reserveResult.update_organizations_by_pk;
+          if (!org || org.quota_used > org.quota_allowed) {
+            await graphqlClient(`
+              mutation RollbackQuota($orgId: uuid!) {
+                update_organizations_by_pk(pk_columns: { id: $orgId }, _inc: { quota_used: -1 }) { id }
+              }
+            `, { orgId });
+            console.warn(`Quota exceeded for Org ${orgId}. Skipping scheduled run.`);
+            continue;
           }
         }
+      } catch (err) {
+        console.error('Error reserving quota for scheduled trigger:', err);
+        continue;
       }
-    `;
 
-    const wfData = await graphqlClient(workflowQuery, { id: workflow_id, userId });
-    const workflow = wfData.workflows_by_pk;
-
-    if (!workflow) {
-      return res.status(404).json({ message: 'Workflow not found' });
-    }
-
-    const members = workflow.organization?.org_members || [];
-    if (members.length === 0) {
-      return res.status(403).json({ message: 'User does not belong to this organization' });
-    }
-    const role = members[0].role;
-    if (role !== 'owner' && role !== 'editor') {
-      return res.status(403).json({ message: 'Insufficient permissions. Must be owner or editor.' });
-    }
-
-    // Try to atomically reserve quota by incrementing quota_used
-    try {
-      const incrementResult = await graphqlClient(`
-        mutation ReserveQuota($orgId: uuid!) {
-          update_organizations_by_pk(
-            pk_columns: { id: $orgId },
-            _inc: { quota_used: 1 }
-          ) {
+      // Create workflow run
+      const initRunMutation = `
+        mutation InitRun($workflowId: uuid!) {
+          insert_workflow_runs_one(object: {
+            workflow_id: $workflowId,
+            status: "running",
+            trigger_type: "scheduled"
+          }) {
             id
-            quota_used
-            quota_allowed
+            workflow {
+              org_id
+              workflow_steps(order_by: {step_order: asc}) {
+                id
+                name
+                type
+                config
+                step_order
+              }
+            }
           }
         }
-      `, { orgId: workflow.org_id });
+      `;
+      const runData = await graphqlClient(initRunMutation, { workflowId: trigger.workflow_id });
+      const run = runData.insert_workflow_runs_one;
+      const runId = run.id;
+      
+      triggeredRuns.push({ workflowId: trigger.workflow_id, runId });
 
-      const org = incrementResult.update_organizations_by_pk;
-      if (!org || org.quota_used > org.quota_allowed) {
-        // Exceeded constraint (if chk_quota allowed it temporarily or in memory, check it)
-        // Rollback immediately
-        await rollbackQuota(workflow.org_id);
-        return res.status(403).json({ message: 'Organization quota exceeded' });
-      }
-    } catch (err: any) {
-      return res.status(403).json({ message: 'Organization quota exceeded' });
+      // Run execution loop in background
+      executeWorkflow(runId, run.workflow.org_id, run.workflow.workflow_steps).catch(console.error);
     }
 
-    // Step 6: Create workflow_run
-    const initRunMutation = `
-      mutation InitRun($workflowId: uuid!, $userId: uuid!) {
-        insert_workflow_runs_one(object: {
-          workflow_id: $workflowId,
-          status: "running",
-          created_by: $userId,
-          trigger_type: "manual"
-        }) {
-          id
-        }
-      }
-    `;
-    const runData = await graphqlClient(initRunMutation, { workflowId: workflow_id, userId });
-    const runId = runData.insert_workflow_runs_one.id;
-
-    res.status(200).json({ run_id: runId, status: 'started' });
-
-    executeWorkflow(runId, workflow.org_id, workflow.workflow_steps).catch(console.error);
-
+    res.status(200).json({ success: true, triggersProcessed: triggers.length, triggeredRuns });
   } catch (error: any) {
     console.error(error);
-    return res.status(400).json({ message: error.message || 'Error triggering workflow' });
+    res.status(500).json({ error: error.message });
   }
 }
 
@@ -184,13 +185,13 @@ async function executeWorkflow(runId: string, orgId: string, steps: any[]) {
 
     if (result.status === 'failed') {
       await updateWorkflowRunStatus(runId, 'failed', result.error);
-      await rollbackQuota(orgId); // Release quota reservation on failure
+      await rollbackQuota(orgId);
       return;
     }
 
     if (result.status === 'paused') {
       await updateWorkflowRunStatus(runId, 'paused');
-      return; // Stop execution, will be resumed by approveStep
+      return; 
     }
 
     if (result.output) {

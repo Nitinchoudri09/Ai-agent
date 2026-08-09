@@ -1,0 +1,34 @@
+actions:
+  - name: triggerWorkflowRun
+    definition:
+      kind: synchronous
+      handler: "{{NHOST_BACKEND_URL}}/v1/functions/triggerWorkflowRun"
+      arguments:
+        - name: workflowId
+          type: uuid!
+      output_type: TriggerRunResponse
+    permissions:
+      - role: user
+  - name: approveStep
+    definition:
+      kind: synchronous
+      handler: "{{NHOST_BACKEND_URL}}/v1/functions/approveStep"
+      arguments:
+        - name: stepRunId
+          type: uuid!
+      output_type: ApproveStepResponse
+    permissions:
+      - role: user
+custom_types:
+  input_objects: []
+  objects:
+    - name: TriggerRunResponse
+      fields:
+        - name: id
+          type: uuid!
+        - name: status
+          type: String!
+    - name: ApproveStepResponse
+      fields:
+        - name: success
+          type: Boolean!

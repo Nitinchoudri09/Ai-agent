@@ -1,0 +1,6 @@
+- name: execute_scheduled_workflows
+  webhook: "{{NHOST_BACKEND_URL}}/v1/functions/cronTrigger"
+  schedule: "*/5 * * * *"
+  payload: {}
+  headers: []
+  include_in_metadata: true

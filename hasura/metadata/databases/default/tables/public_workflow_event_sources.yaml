@@ -1,0 +1,21 @@
+table:
+  name: workflow_event_sources
+  schema: public
+event_triggers:
+  - name: process_db_event
+    definition:
+      enable_manual: false
+      insert:
+        columns: "*"
+    webhook: "{{NHOST_BACKEND_URL}}/v1/functions/webhook"
+    headers:
+      - name: Authorization
+        value_from_env: WEBHOOK_SECRET
+select_permissions:
+  - role: user
+    permission:
+      columns:
+        - id
+        - data
+        - created_at
+      filter: {}
