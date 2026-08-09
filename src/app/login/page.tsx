@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useSignInEmailPassword, useSignUpEmailPassword } from '@/lib/nhost-hooks';
 import { useRouter } from 'next/navigation';
 
@@ -13,7 +13,14 @@ export default function LoginPage() {
   const { signInEmailPassword, isLoading: isSignInLoading, error: signInError } = useSignInEmailPassword();
   const { signUpEmailPassword, isLoading: isSignUpLoading, error: signUpError } = useSignUpEmailPassword();
 
-  const isMockMode = !process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local';
+  const [isMockMode, setIsMockMode] = useState(true);
+
+  useEffect(() => {
+    const active = localStorage.getItem('mock_mode_active') === 'true' || 
+                   !process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || 
+                   process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local';
+    setIsMockMode(active);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,8 +99,18 @@ export default function LoginPage() {
           </p>
 
           {error && (
-            <div className="bg-red-950/50 border border-red-900 text-red-400 p-3 rounded-lg mb-6 text-sm">
-              {error.message}
+            <div className="bg-red-950/50 border border-red-900 text-red-400 p-4 rounded-lg mb-6 text-sm space-y-3">
+              <div>{error.message}</div>
+              <button
+                type="button"
+                onClick={() => {
+                  localStorage.setItem('mock_mode_active', 'true');
+                  window.location.reload();
+                }}
+                className="w-full bg-amber-600 hover:bg-amber-700 text-white font-semibold py-1.5 px-3 rounded-md transition-all text-xs"
+              >
+                Switch to Offline Sandbox Mode (No backend required)
+              </button>
             </div>
           )}
 
@@ -138,6 +155,20 @@ export default function LoginPage() {
               {isLogin ? 'Sign Up' : 'Sign In'}
             </button>
           </p>
+
+          <div className="mt-6 pt-6 border-t border-slate-800 text-center">
+            <button
+              type="button"
+              onClick={() => {
+                const active = localStorage.getItem('mock_mode_active') === 'true';
+                localStorage.setItem('mock_mode_active', active ? 'false' : 'true');
+                window.location.reload();
+              }}
+              className="text-xs font-semibold text-amber-500 hover:text-amber-400 transition-colors"
+            >
+              {isMockMode ? "☁️ Switch to Live Nhost Mode" : "🖥️ Switch to Offline Sandbox Mode"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

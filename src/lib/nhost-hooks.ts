@@ -3,7 +3,9 @@
 import * as nhostNext from '@nhost/nextjs';
 import { useState, useEffect } from 'react';
 
-const isMockMode = !process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local';
+const isMockMode = typeof window !== 'undefined'
+  ? (localStorage.getItem('mock_mode_active') === 'true' || !process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local')
+  : (!process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local');
 
 export function useAuthenticationStatus() {
   const [auth, setAuth] = useState({ isAuthenticated: false, isLoading: true });

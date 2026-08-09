@@ -5,7 +5,9 @@ import { useAuthenticationStatus, useUserData } from '@/lib/nhost-hooks';
 import { useQuery } from '@/lib/graphql-hooks';
 import { gql } from '@apollo/client/core';
 
-const isMockMode = !process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local';
+const isMockMode = typeof window !== 'undefined'
+  ? (localStorage.getItem('mock_mode_active') === 'true' || !process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local')
+  : (!process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN || process.env.NEXT_PUBLIC_NHOST_SUBDOMAIN === 'local');
 
 type Role = 'owner' | 'editor' | 'viewer' | null;
 
