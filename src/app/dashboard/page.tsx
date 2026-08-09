@@ -14,6 +14,17 @@ export default function Dashboard() {
   const [newWfName, setNewWfName] = useState('');
   const [newWfDesc, setNewWfDesc] = useState('');
 
+  const [timedOut, setTimedOut] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (authLoading) {
+        setTimedOut(true);
+      }
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [authLoading]);
+
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.push('/login');
@@ -38,7 +49,74 @@ export default function Dashboard() {
     }
   });
 
-  if (authLoading || !isAuthenticated) return <div className="p-8">Loading...</div>;
+  if (timedOut) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center p-8 text-white">
+        <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl text-center space-y-6">
+          <h2 className="text-2xl font-bold text-red-500">Authentication Timeout</h2>
+          <p className="text-slate-400 text-sm">
+            The login check is taking longer than expected. Please verify that your Nhost environment variables are correctly configured on Render.
+          </p>
+          <div className="flex flex-col space-y-3">
+            <button
+              onClick={() => router.push('/login')}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition-all"
+            >
+              Go to Login Page
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold py-2.5 px-4 rounded-lg transition-all"
+            >
+              Retry Connection
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex justify-center items-center p-8 text-white">
+        <div className="text-center space-y-4">
+          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="text-slate-400 font-medium">Verifying your session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex justify-center items-center p-8 text-white">
+        <p className="text-slate-400 font-medium">Redirecting to login...</p>
+      </div>
+    );
+  }
+
+  if (!organizationId) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center p-8 text-white">
+        <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl text-center space-y-6">
+          <h2 className="text-2xl font-bold text-yellow-500 font-sans">No Organization Found</h2>
+          <p className="text-slate-400 text-sm">
+            Your account is authenticated, but no organization membership was found. If you recently signed up in mock mode, try logging in with `owner-a@example.com` or creating a new workspace.
+          </p>
+          <button
+            onClick={() => {
+              localStorage.removeItem('mock_user');
+              router.push('/login');
+              setTimeout(() => window.location.reload(), 100);
+            }}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-lg transition-all w-full"
+          >
+            Log Out & Switch User
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const usage = (usageData as any)?.organization_usage?.[0];
   const workflows = (wfData as any)?.workflows || [];
