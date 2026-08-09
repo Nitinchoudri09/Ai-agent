@@ -33,15 +33,12 @@ export default function LoginPage() {
       
       if (!exists) {
         // Map role based on email context
-        let role = 'owner';
+        let role = 'viewer';
+        if (email.includes('owner')) role = 'owner';
+        else if (email.includes('editor')) role = 'editor';
+
         let orgId = '11111111-1111-1111-1111-111111111111'; // Org A
-        
-        if (email.includes('editor')) {
-          role = 'editor';
-        } else if (email.includes('viewer')) {
-          role = 'viewer';
-        } else if (email.includes('owner') && email.includes('b')) {
-          role = 'owner';
+        if (email.includes('.b@')) {
           orgId = '22222222-2222-2222-2222-222222222222'; // Org B
         }
         
